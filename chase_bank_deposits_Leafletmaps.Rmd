@@ -1,0 +1,179 @@
+---
+output:
+  html_document:
+    theme: sandstone
+  pdf_document: default
+---
+
+
+```{r setup, include = FALSE}
+
+# read data
+deposits.df <- read.csv("C:/Users/John/projects/Visualizations/chase_bank_data.csv", header = TRUE)
+
+# load libraries
+suppressPackageStartupMessages({
+  library(dplyr)  # set for data wrangling
+  library(Hmisc)  # set for data wrangling
+  library(ggmap)  # set for Google API geocode pull
+  library(leaflet)  # set for mapping
+  library(highcharter)  # set for chart selections
+  library(treemap)  # set for treemap via highcharter
+  library(RColorBrewer)  # set for color palettes
+  library(viridis)  # set for color palettes
+  library(flexdashboard)  # set for R Markdown layout
+})
+
+```
+
+## Chase Bank Deposits: 2016 {.tabset}
+
+### Interactive Map of Branches & Deposits 
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE}
+
+##############################
+# Select geocode NAs and fill via Google API
+##############################
+
+# 66 lon/lat geocode NAs and 4 set to 0/0; need to fill NAs using given address data
+# concatenate address string for geocode lookup via Google API
+deposits.df <- deposits.df %>% 
+               mutate(Full.Address = as.character(paste(Street.Address, 
+                                                        City, State, Zipcode, 
+                                                        sep = ", "))) 
+
+# select observations requiring lon/lat geocodes  
+geoNeed <- select(rbind(filter(deposits.df, is.na(Latitude)), 
+                        filter(deposits.df, Latitude == 0 & Longitude == 0)), 
+                  Full.Address)
+
+# setting geocode function idle since Kaggle denies Google API connectivity
+# geoReturn <- geocode(geoNeed$Full.Address)  # ping Google API for geocodes
+
+##############################
+# Return NA geocodes
+# manual entry of data returned by Google API via geocode function
+##############################
+
+# manual entry of lon/lat returns from google API 
+lon <- c(-73.93045,  -73.87032,  -73.88393,  -73.90470,  -73.73529,  -73.84845,  
+         -73.78723,  -73.91557,  -73.98365,  -91.79929, -112.35875, -73.63982,
+         -119.14756,  -97.28813,  -84.39393,  -87.89474,  -87.63088,  -81.00323,  
+         -82.54631,  -80.23550,  -81.95945,  -82.35256, -80.24907,  -81.79791,
+         -80.57533,  -82.54042,  -84.30623,  -82.48278,  -80.29329,  -82.35236,
+         -84.38026,  -80.28223,  -84.70221, -80.89459,  -81.80689,  -80.08798,
+         -97.72287,  -97.13316, -122.64183, -117.98794, -118.36593, -118.39550,
+         -116.36372, -117.78555, -117.65756, -122.27083, -115.04623, -118.26274,
+         -118.29965, -122.42208, -117.90816, -121.90605, -117.83451, -118.41256,
+         -118.48970, -117.74826, -118.36680, -117.73757, -118.02884, -117.97114,
+         -122.43382, -115.22310,  -82.67984,  -73.81824,  -72.97996, -118.39366, 
+         -88.20364,  -88.20434,  -87.68011,  -87.95925)
+lat <- c(40.76487, 40.75070, 40.74928, 40.74496, 40.77042, 40.72391, 40.74020, 
+         40.71350, 40.69287, 30.00233, 33.46202, 41.14105, 35.38311, 32.93101, 
+         39.22333, 42.02425, 41.88935, 29.12524, 27.33623, 26.19439, 28.95533, 
+         28.14614, 26.01511, 26.14123, 28.08890, 28.08453, 33.78948, 27.93760, 
+         25.93889, 27.71294, 33.87622, 26.00874, 33.94135, 29.02840, 26.33375, 
+         26.57111, 30.40539, 32.68419, 45.38788, 33.65609, 34.06330, 33.88763, 
+         33.75795, 33.72886, 33.59747, 37.80392, 36.03405, 34.12698, 34.05236, 
+         37.76827, 33.62847, 37.27039, 33.69908, 34.00718, 34.01858, 34.10746, 
+         33.77047, 33.86112, 33.84613, 33.68712, 37.80476, 36.12526, 27.72289, 
+         40.89272, 41.33846, 33.76138, 41.71133, 41.97426, 42.00451, 42.13975)
+
+geoReturn <- data.frame(cbind(lon, lat))  # bind lon/lat data
+
+##############################
+# Join needed geocodes to deposits.df
+##############################
+
+# merge geocodes with full address to facilitate join
+geoReturn <- cbind(geoNeed, geoReturn)  
+
+# join needed lon/lat geocodes to deposits.df
+deposits.df <- left_join(deposits.df, geoReturn, 
+                         by = c("Full.Address" = "Full.Address"))
+
+# fill geocoded NAs with new data
+# deposits data has large, unbalanced spread so grouping as factors for map 
+deposits.df <- deposits.df %>% 
+               mutate(lat = ifelse(is.na(lat), Latitude, lat)) %>%  
+               mutate(lon = ifelse(is.na(lon), Longitude, lon)) %>%  
+               mutate(Region.Address = paste0(City, ", ", State, " ", Zipcode)) %>%  
+               mutate(X2016.Decile = ntile(X2016.Deposits, 100)) %>%   
+               mutate(X2016.DepositsM = X2016.Deposits / 1000000) 
+
+##############################
+# Specify information for mapping
+##############################
+
+# specify bank branch information for interactive map popup
+labelInfo <- paste0("<strong>Branch: </strong>", 
+                    deposits.df$Branch.Name, 
+                    "<br><strong>", 
+                    "Branch Number", 
+                    ": </strong>", 
+                    deposits.df$Branch.Number,
+                    "<br><strong>", 
+                    "2016 Deposits", 
+                    ": </strong> $", 
+                    prettyNum(deposits.df$X2016.Deposits, big.mark = ","),
+                    "<br><strong>", 
+                    "Branch Address", 
+                    ": </strong><br>",
+                    deposits.df$Street.Address,
+                    "<br>", 
+                    deposits.df$Region.Address)
+
+# specify color palette for map points
+pal <- colorNumeric(palette = colorRamp(c("#a669f4", "#0c000f"), interpolate = "spline"),
+                   reverse = FALSE,  
+                   domain = NULL)
+
+##############################
+# Map 2016 deposits by bank branch
+##############################
+
+leafletMap <- leaflet(deposits.df) %>%  
+              # https://leaflet-extras.github.io/leaflet-providers/preview/index.html
+              addProviderTiles("CartoDB.PositronNoLabels") %>%  
+              addCircles(lng = ~lon, lat = ~lat,  
+                         radius = 100, 
+                         color = ~pal(X2016.Decile),  
+                         popup = labelInfo) %>%  
+              addLegend("bottomright", 
+                        pal = pal, 
+                        values = ~X2016.Decile,
+                        title = "2016 Deposits<br>Decile %",
+                        opacity = 0.8) 
+
+leafletMap
+```
+
+### Segmentation of Deposit Volume by State & City
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE, fig.keep = "none"}
+treeData <- deposits.df %>%
+            group_by(State, City) %>% 
+            summarise(X2016.Sum = sum(X2016.Deposits)) %>%
+            mutate(States = State) %>%
+            filter(X2016.Sum > 0) %>%
+            mutate(X2016.SumM = round((X2016.Sum / 1000000), 3))  # scale to $M
+
+tm <- treemap(treeData, 
+              index = c("State", "City"),
+              vSize = "X2016.SumM",
+              vColor = "State",
+              type = "index",
+              palette = rev(viridis(10)),
+              draw = FALSE)
+
+hc <- hctreemap(tm,
+                allowDrillToNode = TRUE, 
+                layoutAlgorithm = "squarified",
+                levels = list(list(level = 1, 
+                                   dataLabels = list(enabled = TRUE)), 
+                              list(level = 2, 
+                                   dataLabels = list(enabled = FALSE))))
+
+hc
+```
